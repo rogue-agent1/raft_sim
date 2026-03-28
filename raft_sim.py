@@ -1,38 +1,40 @@
 #!/usr/bin/env python3
-"""Raft consensus algorithm simulator."""
-import sys, random
+"""raft_sim - Simplified Raft consensus protocol."""
+import sys, random, time
 class Node:
-    def __init__(self,id,n):
-        self.id,self.n=id,n; self.state='follower'; self.term=0
-        self.voted_for=None; self.votes=0; self.log=[]; self.leader=None
-        self.timeout=random.randint(150,300)
-    def request_vote(self,nodes):
-        self.state='candidate'; self.term+=1; self.votes=1; self.voted_for=self.id
-        for n in nodes:
-            if n.id!=self.id and n.term<=self.term and n.voted_for is None:
-                n.voted_for=self.id; self.votes+=1; n.term=self.term
-        if self.votes>self.n//2:
-            self.state='leader'; self.leader=self.id
-            for n in nodes: n.leader=self.id; n.state='follower' if n.id!=self.id else 'leader'
+    def __init__(self, id, peers):
+        self.id=id; self.peers=peers; self.state="follower"
+        self.term=0; self.voted_for=None; self.log=[]
+        self.commit_index=0; self.timeout=random.uniform(1.5,3.0)
+    def request_vote(self, candidate_term, candidate_id):
+        if candidate_term>self.term:
+            self.term=candidate_term; self.state="follower"; self.voted_for=candidate_id
             return True
+        if candidate_term==self.term and (self.voted_for is None or self.voted_for==candidate_id):
+            self.voted_for=candidate_id; return True
         return False
-    def append_entry(self,entry,nodes):
-        if self.state!='leader': return False
-        self.log.append((self.term,entry)); acks=1
-        for n in nodes:
-            if n.id!=self.id: n.log.append((self.term,entry)); acks+=1
-        return acks>self.n//2
-n=int(sys.argv[1]) if len(sys.argv)>1 else 5
-nodes=[Node(i,n) for i in range(n)]
-print(f"Raft cluster: {n} nodes")
-# Simulate election
-random.seed(42)
-winner=min(nodes,key=lambda n:n.timeout)
-print(f"\nNode {winner.id} times out first (timeout={winner.timeout}ms)")
-if winner.request_vote(nodes):
-    print(f"Node {winner.id} elected leader (term {winner.term}, {winner.votes}/{n} votes)")
-# Simulate log replication
-for entry in ["SET x=1","SET y=2","DEL x"]:
-    ok=winner.append_entry(entry,nodes)
-    print(f"  Replicate '{entry}': {'committed' if ok else 'failed'} ({len(winner.log)} entries)")
-print(f"\nAll logs consistent: {all(n.log==nodes[0].log for n in nodes)}")
+    def start_election(self, nodes):
+        self.term+=1; self.state="candidate"; self.voted_for=self.id
+        votes=1
+        for peer in self.peers:
+            if nodes[peer].request_vote(self.term, self.id): votes+=1
+        if votes>len(self.peers)//2+1:
+            self.state="leader"; return True
+        return False
+def simulate(n=5, rounds=5):
+    nodes={i:Node(i,[j for j in range(n) if j!=i]) for i in range(n)}
+    for r in range(rounds):
+        leader=None
+        for nid,node in nodes.items():
+            if node.state=="leader": leader=nid; break
+        if leader is None:
+            candidate=random.choice(list(nodes.keys()))
+            won=nodes[candidate].start_election(nodes)
+            print(f"Round {r}: Node {candidate} election {'won' if won else 'lost'} (term {nodes[candidate].term})")
+        else:
+            entry=f"cmd_{r}"; nodes[leader].log.append(entry)
+            print(f"Round {r}: Leader {leader} committed '{entry}' (term {nodes[leader].term})")
+            if random.random()<0.2:
+                nodes[leader].state="follower"; print(f"  Leader {leader} stepped down!")
+    print(f"\nFinal states: {[(n.id,n.state,n.term) for n in nodes.values()]}")
+if __name__=="__main__": simulate()
